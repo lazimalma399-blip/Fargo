@@ -1,94 +1,85 @@
-import json
-from jsonschema import validate, exceptions
-from typing import Dict, Any
+import logging
+import logging.handlers
+import sys
+import time
+from pathlib import Path
 
-# --- 1. Определение JSON Схемы ---
+# --- Настройки ---
+LOG_FILE_PATH = Path("application.log")
+LOG_LEVEL = logging.INFO # Минимальный уровень для записи и вывода
+LOG_FORMAT = '%(asctime)s - %(levelname)s - %(name)s - %(funcName)s - %(message)s'
+DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 
-# Схема определяет структуру, типы данных и обязательность полей.
-# Это "контракт" между клиентом и сервером.
-USER_PROFILE_SCHEMA: Dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "id": {"type": "integer", "description": "Уникальный ID пользователя."},
-        "email": {"type": "string", "format": "email", "description": "Email пользователя."},
-        "firstName": {"type": "string", "minLength": 2, "description": "Имя пользователя."},
-        "lastName": {"type": "string", "description": "Фамилия пользователя."},
-        "company": {"type": "string", "description": "Название компании."},
-        "isActive": {"type": "boolean", "description": "Статус активации аккаунта."},
-        "roles": {
-            "type": "array",
-            "items": {"type": "string"},
-            "minItems": 1
-        }
-    },
-    # Обязательные поля
-    "required": ["id", "email", "firstName", "isActive", "roles"],
-    "additionalProperties": False # Запрет на лишние поля, не указанные в схеме
-}
+# --- 1. Основная функция настройки логгера ---
 
-# --- 2. Имитация данных, полученных от API ---
-
-# Пример 1: Корректный ответ от API
-VALID_USER_DATA: Dict[str, Any] = {
-    "id": 101,
-    "email": "user@authena.com",
-    "firstName": "Алекс",
-    "lastName": "Смит",
-    "company": "Tech Solutions",
-    "isActive": True,
-    "roles": ["admin", "user"]
-}
-
-# Пример 2: Некорректный ответ (нарушение схемы)
-INVALID_USER_DATA: Dict[str, Any] = {
-    "id": "101", # Ошибка: должен быть INTEGER
-    "email": "invalid-email", # Ошибка: не соответствует формату "email"
-    "firstName": "А", # Ошибка: minLength = 2
-    "isActive": 1, # Ошибка: должен быть BOOLEAN
-    "roles": [] # Ошибка: minItems = 1
-}
-
-# --- 3. Основная функция валидации ---
-
-def validate_json_data(data: Dict[str, Any], schema: Dict[str, Any], schema_name: str) -> bool:
+def setup_logging(log_file: Path, level: int = logging.INFO):
     """
-    Проверяет, соответствует ли словарь данных заданной JSON-схеме.
+    Конфигурирует основной логгер (root logger), добавляя обработчики 
+    для файла и консоли.
     """
-    print(f"\n--- 🔎 Валидация данных по схеме '{schema_name}' ---")
     
+    # Создание основного объекта логгера
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    
+    # Форматер для определения внешнего вида сообщений
+    formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
+
+    # 1. File Handler (Обработчик для записи в файл)
+    # 
+    # RotatingFileHandler: автоматически создает новый файл, когда текущий 
+    # достигает максимального размера, сохраняя старые файлы.
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file,
+        maxBytes=1048576, # 1 MB
+        backupCount=5,     # Хранить до 5 старых лог-файлов
+        encoding='utf-8'
+    )
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+    
+    # 2. Console Handler (Обработчик для вывода в консоль)
+    # StreamHandler выводит логи в стандартный поток вывода (stdout/stderr)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    root_logger.addHandler(console_handler)
+    
+    # Сообщение о готовности системы
+    root_logger.info("Система логирования успешно инициализирована.")
+    
+# --- 2. Функции для демонстрации логирования ---
+
+# Получаем логгер для конкретного модуля (лучшая практика)
+api_logger = logging.getLogger("API_Client")
+db_logger = logging.getLogger("Database_Service")
+
+def fetch_user_data(user_id):
+    """Имитирует получение данных и логирует этапы."""
+    api_logger.info(f"Начало запроса данных для пользователя ID: {user_id}")
     try:
-        # 
-        validate(instance=data, schema=schema)
-        print("✅ ВАЛИДАЦИЯ УСПЕШНА: Данные полностью соответствуют схеме.")
+        if user_id % 3 == 0:
+            raise ConnectionError("Сетевое соединение прервано.")
+            
+        if user_id % 5 == 0:
+            db_logger.warning(f"Медленный ответ от БД для ID {user_id}")
+            time.sleep(0.5)
+            
+        api_logger.debug("Этот уровень не будет записан, так как уровень: INFO")
+        api_logger.info(f"Успешно получены данные пользователя ID: {user_id}")
         return True
-        
-    except exceptions.ValidationError as err:
-        print("❌ ОШИБКА ВАЛИДАЦИИ:")
-        
-        # Вывод детальной информации об ошибке
-        print(f"   Поле: {list(err.path)} (Путь к ошибке)")
-        print(f"   Ошибка: {err.message}")
-        print(f"   Схема ожидает: {err.schema}")
-        
-        return False
-    except Exception as e:
-        print(f"❌ Непредвиденная ошибка валидации: {e}")
+
+    except ConnectionError as e:
+        # Логирование ошибок (уровень ERROR)
+        api_logger.error(f"Критическая ошибка при получении данных ID {user_id}: {e}")
         return False
 
 # --- Главный запуск программы ---
 
 if __name__ == "__main__":
     
-    print("--- 🔬 ИНСТРУМЕНТ ВАЛИДАЦИИ JSON-СХЕМЫ ---")
+    print("--- 📝 ИНСТРУМЕНТ ПРОФЕССИОНАЛЬНОГО ЛОГИРОВАНИЯ ---")
     
-    # 1. Проверка корректных данных
-    is_valid_1 = validate_json_data(VALID_USER_DATA, USER_PROFILE_SCHEMA, "Профиль пользователя (Корректный)")
+    # 1. Настройка системы логирования
+    setup_logging(LOG_FILE_PATH, LOG_LEVEL)
     
-    print("-" * 60)
-    
-    # 2. Проверка некорректных данных
-    is_valid_2 = validate_json_data(INVALID_USER_DATA, USER_PROFILE_SCHEMA, "Профиль пользователя (Некорректный)")
-    
-    print("-" * 60)
-    print(f"Итого: Корректные данные прошли проверку: {is_valid_1}")
-    print(f"Итого: Некорректные данные прошли проверку: {is_valid_2}")
+    # 2. Имитация работы системы
