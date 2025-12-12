@@ -1,0 +1,146 @@
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import json
+import time
+
+# --- Настройки API ---
+# В реальной жизни это будет endpoint для входа в систему (Login)
+AUTHENA_LOGIN_URL = "https://mock-authena-api.com/v1/auth/login" 
+MAX_RETRIES = 3 
+RETRY_BACKOFF = 1.0 
+
+# --- 1. Отказоустойчивая HTTP-Сессия (повторное использование из предыдущего кода) ---
+
+def create_resilient_session():
+    """Создает requests.Session с логикой повторных попыток для надежности."""
+    retry_strategy = Retry(
+        total=MAX_RETRIES,
+        backoff_factor=RETRY_BACKOFF,
+        status_forcelist=[500, 502, 503, 504],
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session = requests.Session()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+# --- 2. Функция аутентификации ---
+
+def authenticate_user(session, credentials, api_key):
+    """
+    Имитирует отправку учетных данных для получения токена доступа.
+    """
+    
+    # Данные для входа
+    login_payload = {
+        "email": credentials["email"],
+        "password": credentials["password"]
+    }
+    
+    # Заголовки, включая ключ клиента
+    headers = {
+        "Content-Type": "application/json",
+        "X-API-Key": api_key, 
+        "Accept": "application/json"
+    }
+
+    print(f"\n-> 🔑 Отправка запроса на вход для {credentials['email']}...")
+    
+    try:
+        # Выполняем POST-запрос
+        response = session.post(
+            AUTHENA_LOGIN_URL,
+            json=login_payload,
+            headers=headers,
+            timeout=15
+        )
+        
+        # Вызов исключения для кодов ошибок 4xx/5xx
+        response.raise_for_status()
+        
+        # Ожидаем 200 OK или 201 Created
+        if response.status_code in [200, 201]:
+            response_data = response.json()
+            
+            # Предполагаем, что токен хранится в поле 'accessToken' или 'token'
+            access_token = response_data.get('accessToken')
+            
+            if access_token:
+                print("✅ УСПЕХ: Пользователь успешно аутентифицирован.")
+                print(f"   Получен токен доступа (JWT): {access_token[:20]}...")
+                # 
+                return access_token, response_data
+            else:
+                print("❌ ОШИБКА: Сервер ответил успешно, но не вернул токен.")
+                return None, response_data
+
+    except requests.exceptions.HTTPError as e:
+        error_code = e.response.status_code
+        
+        if error_code == 401:
+            print(f"❌ ОШИБКА 401: Несанкционированный доступ. Неверный email или пароль.")
+        elif error_code == 403:
+             print(f"❌ ОШИБКА 403: Доступ запрещен (возможно, аккаунт не активирован).")
+        else:
+            print(f"❌ HTTP Ошибка (Код {error_code}): {e.response.text}")
+        
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Сетевая ошибка или таймаут: {e}")
+        
+    return None, None
+
+# --- Главный запуск программы ---
+
+if __name__ == "__main__":
+    
+    # --- 1. Учетные данные ---
+    
+    # Используйте учетные данные успешно зарегистрированного пользователя
+    LOGIN_CREDENTIALS = {
+        "email": "test.user_1684567890@example.com", # Замените на реальный тестовый email
+        "password": "SecurePassword123!" 
+    }
+    
+    MOCK_API_KEY = "Your-Authena-Public-Key-12345"
+
+    print("--- 🔑 ДЕМОНСТРАЦИЯ АУТЕНТИФИКАЦИИ (LOGIN) ---")
+    
+    # 2. Создание сессии
+    session = create_resilient_session()
+
+    # 3. Выполнение аутентификации
+    token, response_data = authenticate_user(session, LOGIN_CREDENTIALS, MOCK_API_KEY)
+    
+    print("-" * 60)
+    
+    if token:
+        print("✅ Успешный вход!")
+        
+        # --- 4. Пример использования токена для защищенного запроса ---
+        print("\n--- Имитация ЗАЩИЩЕННОГО ЗАПРОСА (использование токена) ---")
+        
+        PROTECTED_ENDPOINT = "https://mock-authena-api.com/v1/user/profile"
+        
+        protected_headers = {
+            "Authorization": f"Bearer {token}", # Стандартный формат для JWT
+            "X-API-Key": MOCK_API_KEY 
+        }
+        
+        print(f"-> 🛡️ Выполнение GET-запроса с токеном...")
+        
+        try:
+            # Имитация защищенного GET-запроса
+            protected_response = session.get(PROTECTED_ENDPOINT, headers=protected_headers, timeout=10)
+            protected_response.raise_for_status()
+            
+            print(f"✅ Защищенный запрос успешен (Код {protected_response.status_code}).")
+            # print(f"   Данные профиля: {protected_response.json()}")
+            
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Защищенный запрос не удался: {e}")
+            
+    else:
+        print("Вход не удался. Проверьте учетные данные или статус активации аккаунта.")
+
+    session.close()
