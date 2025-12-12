@@ -1,82 +1,94 @@
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 import json
-from dataclasses import dataclass, field
-import time
-from typing import Optional, Dict, Any
+from jsonschema import validate, exceptions
+from typing import Dict, Any
 
-# --- 1. Модель данных для токена ---
+# --- 1. Определение JSON Схемы ---
 
-@dataclass
-class AuthTokens:
-    """Хранилище для токенов доступа и обновления, включая время истечения."""
-    access_token: str
-    refresh_token: Optional[str] = None
-    expires_in: Optional[int] = None
-    # Фиксируем время получения токена (для расчета срока действия)
-    issued_at: float = field(default_factory=time.time) 
+# Схема определяет структуру, типы данных и обязательность полей.
+# Это "контракт" между клиентом и сервером.
+USER_PROFILE_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "integer", "description": "Уникальный ID пользователя."},
+        "email": {"type": "string", "format": "email", "description": "Email пользователя."},
+        "firstName": {"type": "string", "minLength": 2, "description": "Имя пользователя."},
+        "lastName": {"type": "string", "description": "Фамилия пользователя."},
+        "company": {"type": "string", "description": "Название компании."},
+        "isActive": {"type": "boolean", "description": "Статус активации аккаунта."},
+        "roles": {
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1
+        }
+    },
+    # Обязательные поля
+    "required": ["id", "email", "firstName", "isActive", "roles"],
+    "additionalProperties": False # Запрет на лишние поля, не указанные в схеме
+}
+
+# --- 2. Имитация данных, полученных от API ---
+
+# Пример 1: Корректный ответ от API
+VALID_USER_DATA: Dict[str, Any] = {
+    "id": 101,
+    "email": "user@authena.com",
+    "firstName": "Алекс",
+    "lastName": "Смит",
+    "company": "Tech Solutions",
+    "isActive": True,
+    "roles": ["admin", "user"]
+}
+
+# Пример 2: Некорректный ответ (нарушение схемы)
+INVALID_USER_DATA: Dict[str, Any] = {
+    "id": "101", # Ошибка: должен быть INTEGER
+    "email": "invalid-email", # Ошибка: не соответствует формату "email"
+    "firstName": "А", # Ошибка: minLength = 2
+    "isActive": 1, # Ошибка: должен быть BOOLEAN
+    "roles": [] # Ошибка: minItems = 1
+}
+
+# --- 3. Основная функция валидации ---
+
+def validate_json_data(data: Dict[str, Any], schema: Dict[str, Any], schema_name: str) -> bool:
+    """
+    Проверяет, соответствует ли словарь данных заданной JSON-схеме.
+    """
+    print(f"\n--- 🔎 Валидация данных по схеме '{schema_name}' ---")
     
-    @property
-    def is_expired(self) -> bool:
-        """Проверяет, истек ли access_token (с запасом 60 секунд)."""
-        if self.expires_in is None:
-            return False
-        # Проверяем, осталось ли менее 60 секунд до истечения срока
+    try:
         # 
-        return (time.time() - self.issued_at) > (self.expires_in - 60) 
-
-# --- 2. Улучшенный Класс API-Клиента ---
-
-class AuthenaClient:
-    """
-    Класс-обертка для взаимодействия с Authena API с логикой обновления токена.
-    """
-    
-    BASE_URL = "https://mock-authena-api.com/v1"
-    
-    def __init__(self, api_key: str, max_retries: int = 3):
-        self.api_key = api_key
-        self.session = self._create_resilient_session(max_retries)
-        self.tokens: Optional[AuthTokens] = None
+        validate(instance=data, schema=schema)
+        print("✅ ВАЛИДАЦИЯ УСПЕШНА: Данные полностью соответствуют схеме.")
+        return True
         
-    # --- Служебные методы (Опущены для краткости, они те же, что и раньше) ---
-    
-    def _create_resilient_session(self, max_retries):
-        """Создает requests.Session с логикой повторных попыток."""
-        retry_strategy = Retry(total=max_retries, backoff_factor=1.0, status_forcelist=[500, 502, 503, 504])
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session = requests.Session()
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        return session
-    
-    def _get_auth_headers(self) -> Dict[str, str]:
-        """Формирует заголовки, включая токен доступа."""
-        headers = {"X-API-Key": self.api_key, "Content-Type": "application/json", "Accept": "application/json"}
-        if self.tokens and self.tokens.access_token:
-            headers["Authorization"] = f"Bearer {self.tokens.access_token}"
-        return headers
-
-    # --- 3. Метод обновления токена (НОВЫЙ) ---
-
-    def refresh_access_token(self) -> bool:
-        """
-        Использует refresh_token для получения нового access_token.
-        """
-        if not self.tokens or not self.tokens.refresh_token:
-            print("❌ ОШИБКА: Токен обновления не доступен. Требуется повторный вход.")
-            return False
-
-        url = f"{self.BASE_URL}/auth/refresh"
-        payload = {"refreshToken": self.tokens.refresh_token}
+    except exceptions.ValidationError as err:
+        print("❌ ОШИБКА ВАЛИДАЦИИ:")
         
-        print(f"\n-> 🔄 Попытка обновления токена...")
+        # Вывод детальной информации об ошибке
+        print(f"   Поле: {list(err.path)} (Путь к ошибке)")
+        print(f"   Ошибка: {err.message}")
+        print(f"   Схема ожидает: {err.schema}")
         
-        try:
-            # Запрос на обновление
-            response = self.session.post(url, json=payload, headers=self._get_auth_headers(), timeout=15)
-            response.raise_for_status()
-            
-            response_data = response.json()
-            new_
+        return False
+    except Exception as e:
+        print(f"❌ Непредвиденная ошибка валидации: {e}")
+        return False
+
+# --- Главный запуск программы ---
+
+if __name__ == "__main__":
+    
+    print("--- 🔬 ИНСТРУМЕНТ ВАЛИДАЦИИ JSON-СХЕМЫ ---")
+    
+    # 1. Проверка корректных данных
+    is_valid_1 = validate_json_data(VALID_USER_DATA, USER_PROFILE_SCHEMA, "Профиль пользователя (Корректный)")
+    
+    print("-" * 60)
+    
+    # 2. Проверка некорректных данных
+    is_valid_2 = validate_json_data(INVALID_USER_DATA, USER_PROFILE_SCHEMA, "Профиль пользователя (Некорректный)")
+    
+    print("-" * 60)
+    print(f"Итого: Корректные данные прошли проверку: {is_valid_1}")
+    print(f"Итого: Некорректные данные прошли проверку: {is_valid_2}")
